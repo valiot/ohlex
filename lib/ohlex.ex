@@ -1,18 +1,5 @@
 defmodule Ohlex do
   @moduledoc """
-  Documentation for `Ohlex`.
+  HostLink protocol stack of Omron PLCs over TCP.
   """
-
-  @doc """
-  Hello world.
-
-  ## Examples
-
-      iex> Ohlex.hello()
-      :world
-
-  """
-  def hello do
-    :world
-  end
 end
