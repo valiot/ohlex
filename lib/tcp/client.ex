@@ -2,7 +2,7 @@ defmodule Ohlex.Tcp.Client do
   @moduledoc """
   API for Omnron HostLink TCP Client.
   """
-  alias Ohlex.Tcp.Client
+  alias Ohlex.{Tcp.Client, HostLink.Omron}
   use GenServer, restart: :permanent, shutdown: 500
   require Logger
 
@@ -13,12 +13,12 @@ defmodule Ohlex.Tcp.Client do
 
   defstruct ip: nil,
             tcp_port: nil,
-            device_id: nil,
             socket: nil,
             timeout: nil,
             active: false,
             status: nil,
-            ctrl_pid: nil
+            ctrl_pid: nil,
+            frame_acc: ""
 
 
   @type client_option ::
@@ -118,10 +118,9 @@ defmodule Ohlex.Tcp.Client do
     with  port <- Keyword.get(args, :tcp_port, state.tcp_port),
           ip <- Keyword.get(args, :ip, state.ip),
           timeout <- Keyword.get(args, :timeout, state.timeout),
-          device_id <- Keyword.get(args, :device_id, state.device_id),
           active <- Keyword.get(args, :active, state.active) do
       new_state =
-        %Client{state | ip: ip, tcp_port: port, timeout: timeout, active: active, ctrl_pid: ctrl_pid, device_id: device_id}
+        %Client{state | ip: ip, tcp_port: port, timeout: timeout, active: active, ctrl_pid: ctrl_pid}
       {:reply, :ok, new_state}
     end
   end
@@ -140,44 +139,23 @@ defmodule Ohlex.Tcp.Client do
   def handle_call(:close, _from, %{status: :closed} = state), do: {:reply, :ok, state}
   def handle_call(:close, _from, state),  do: {:reply, :ok, close_socket(state)}
 
-  def handle_call({:request, cmd}, _from, state) do
-    Logger.debug("(#{__MODULE__}, :request) state: #{inspect(state)}")
+  def handle_call({:request, _cmd_args}, _from, %{status: :closed} = state),
+    do: {:reply, {:error, :closed}, state}
+  def handle_call({:request, cmd_args}, _from, state) do
+    with  {:ok, frame_data} <- Omron.build_frame(cmd_args),
+          :ok <- send_tcp_msg(state, frame_data),
+          {:ok, tcp_server_response} <- receive_tcp_msg(state, 0),
+          {:ok, values} <- Omron.parse(tcp_server_response) do
+      {:reply, {:ok, values}, %Client{state | frame_acc: ""}}
+    else
+      {:error, :closed} ->
+        {:reply, {:error, :closed}, close_socket(state)}
 
-    case state.status do
-      :connected ->
-        request = Tcp.pack_req(cmd, state.transid)
-        length = Tcp.res_len(cmd)
+      {:error, reason} ->
+        {:reply, {:error, reason}, %Client{state | frame_acc: ""}}
 
-        case :gen_tcp.send(state.socket, request) do
-          :ok ->
-            new_state =
-              if state.active do
-                new_msg = Map.put(state.pending_msg, state.transid, cmd)
-
-                n_msg =
-                  if state.transid + 1 > 0xFFFF do
-                    0
-                  else
-                    state.transid + 1
-                  end
-
-                %Client{state | msg_len: length, cmd: cmd, pending_msg: new_msg, transid: n_msg}
-              else
-                %Client{state | msg_len: length, cmd: cmd}
-              end
-
-            {:reply, :ok, new_state}
-
-          {:error, :closed} ->
-            new_state = close_socket(state)
-            {:reply, {:error, :closed}, new_state}
-
-          {:error, reason} ->
-            {:reply, {:error, reason}, state}
-        end
-
-      :closed ->
-        {:reply, {:error, :closed}, state}
+      unhandled_clause ->
+        {:reply, unhandled_clause, %Client{state | frame_acc: ""}}
     end
   end
 
@@ -185,9 +163,13 @@ defmodule Ohlex.Tcp.Client do
   def handle_info({:tcp, _port, response}, %{ctrl_pid: ctrl_pid} = state) do
     with  {:ok, values} <- Omron.parse(response) do
       send(ctrl_pid,  {Ohlex.Tcp.Client, response, values})
+      {:noreply, %Client{state | frame_acc: ""}}
     else
-      error ->
-        Logger.error("(#{__MODULE__}) Receiving Error: #{inspect(error)}")
+      {:error, :closed} ->
+        {:noreply, close_socket(state)}
+      incomplete_frame ->
+        Logger.warn("(#{__MODULE__}) Incomplete frame: #{inspect(incomplete_frame)}")
+        {:noreply, %Client{state | frame_acc: state.frame_acc <> incomplete_frame}}
     end
     {:noreply, state}
   end
@@ -199,7 +181,7 @@ defmodule Ohlex.Tcp.Client do
   end
 
   def handle_info(msg, state) do
-    Logger.error("(#{__MODULE__}, :random_msg) msg: #{inspect(msg)}")
+    Logger.error("(#{__MODULE__}) Unhandle message: #{inspect(msg)}")
     {:noreply, state}
   end
 
@@ -208,6 +190,28 @@ defmodule Ohlex.Tcp.Client do
 
   defp close_socket(state) do
     :ok = :gen_tcp.close(state.socket)
-    %Client{state | socket: nil, status: :closed}
+    %Client{state | socket: nil, status: :closed, frame_acc: ""}
   end
+
+  defp send_tcp_msg(state, frame_data), do: :gen_tcp.send(state.socket, frame_data)
+  defp receive_tcp_msg(%{max_retries: max_retries} = _state, max_retries), do: {:error, :timeout}
+
+  defp receive_tcp_msg(%{timeout: timeout, socket: socket} = state, retries) do
+    case :gen_tcp.recv(socket, 0, timeout) do
+      {:ok, tcp_server_response} ->
+        new_state = %Client{state | frame_acc: state.frame_acc <> tcp_server_response}
+        state.frame_acc
+        |> Omron.is_frame_valid?()
+        |> retry_receive_tcp_msg(new_state, retries)
+      {:error, :timeout} ->
+        receive_tcp_msg(state, retries + 1)
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp retry_receive_tcp_msg(_is_frame_ready? = true, %{frame_acc: tcp_server_response} = _state, _retry),
+    do: {:ok, tcp_server_response}
+  defp retry_receive_tcp_msg(_is_frame_ready? = false, state, retry),
+    do: receive_tcp_msg(state, retry + 1)
 end
