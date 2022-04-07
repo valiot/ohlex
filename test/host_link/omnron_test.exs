@@ -67,4 +67,28 @@ defmodule Ohlex.HostLinkOmron.Test do
       assert Omron.build_frame(cmd) == {:error, :einval}
     end
   end
+
+  describe "parse/1" do
+    test "Valid Read IR Registers cmd" do
+      assert Omron.parse("@04RD00002050*\r") == {:ok, <<0x00, 0x20>>}
+
+      assert Omron.parse("@03RD000AD050*\r") == {:ok, <<0x0A, 0xD0>>}
+    end
+
+    test "Valid Write IR Registers cmd" do
+      assert Omron.parse("@04WR0041*\r") == {:ok, <<>>}
+    end
+
+    test "Invalid cmd: No @" do
+      assert Omron.parse("04RD00002050*\r") == {:error, "04RD00002050*\r"}
+    end
+
+    test "Invalid cmd: No Terminitation" do
+      assert Omron.parse("@04RD00002051*\r") == {:error, "@04RD00002051*\r"}
+    end
+
+    test "Invalid cmd: FCS error" do
+      assert Omron.parse("@04WR0040*\r") == {:error, "@04WR0040*\r"}
+    end
+  end
 end

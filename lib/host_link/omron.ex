@@ -54,22 +54,19 @@ defmodule Ohlex.HostLink.Omron do
   end
 
   def parse(omron_frame) do
-    with  {:ok, frame_struct} <- Frame.new(cmd_args) do
-      complete_frame =
-        frame_struct
-        |> add_initial_char()
-        |> add_device_id()
-        |> add_header()
-        |> add_address()
-        |> add_args()
-        |> add_data_count()
-        |> add_fcs()
-        |> add_termination()
-
-      {:ok, complete_frame.frame}
+    with  true <- is_frame_valid?(omron_frame),
+          <<"@", remainding_omron_frame::binary>> <- omron_frame,
+          <<_device_id::binary-size(2), remainding_omron_frame::binary>> <- remainding_omron_frame,
+          << header::binary-size(2), remainding_omron_frame::binary>> <- remainding_omron_frame,
+          << status::binary-size(2), remainding_omron_frame::binary>> <- remainding_omron_frame,
+          "00" <- status,
+          {remainding_omron_frame, "*\r"} <- String.split_at(remainding_omron_frame, -2),
+          {remainding_omron_frame, _received_fcs} <- String.split_at(remainding_omron_frame, -2),
+          {:ok, values} <- get_values(header, remainding_omron_frame) do
+      {:ok, values}
     else
-      error ->
-        error
+      _error ->
+        {:error, omron_frame}
     end
   end
 
@@ -154,4 +151,14 @@ defmodule Ohlex.HostLink.Omron do
 
   defp add_termination(%{frame: frame} = frame_struct),
     do: %{frame_struct | frame: frame <> "*\r"}
+
+  defp get_values(header, _remainding_omron_frame) when header in ["WR", "WD"], do: {:ok, <<>>}
+  defp get_values(header, remainding_omron_frame) when header in ["RR", "RD"] do
+    values =
+      for  <<chars::binary-size(2) <- remainding_omron_frame>>, reduce: <<>> do
+        acc ->
+          acc <> << String.to_integer(chars, 16) >>
+      end
+    {:ok, values}
+  end
 end
