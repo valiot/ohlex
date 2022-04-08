@@ -12,11 +12,11 @@ defmodule Ohlex.HostLinkOmron.Test do
       assert Omron.is_frame_valid?("@04RD0207000156*\r")
     end
 
-    test "Refute invalid FCS" do
+    test "Refutes invalid FCS" do
       refute Omron.is_frame_valid?("@04RD0207000152*\r")
     end
 
-    test "Validates a frame without a termination" do
+    test "Refutes a frame without a termination" do
       refute Omron.is_frame_valid?("@04RD0207000156")
     end
   end

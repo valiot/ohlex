@@ -1,6 +1,6 @@
 # Ohlex
 
-**TODO: Add description**
+**HostLink protocol stack of Omron PLCs over TCP.**
 
 ## Installation
 
