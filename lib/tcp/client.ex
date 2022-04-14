@@ -252,6 +252,7 @@ defmodule Ohlex.Tcp.Client do
 
         new_state.frame_acc
         |> Omron.is_frame_valid?()
+        |> Omron.has_termination?(new_state)
         |> retry_receive_tcp_msg(new_state, retries)
 
       {:error, :timeout} ->

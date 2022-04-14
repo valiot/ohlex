@@ -93,6 +93,9 @@ defmodule Ohlex.HostLink.Omron do
     end
   end
 
+  def has_termination?(true, _state), do: true
+  def has_termination?(false, %{frame_acc: current_frame}), do: String.contains?(current_frame, "*\r")
+
   defp add_initial_char(%{frame: frame} = frame_struct), do: %{frame_struct | frame: frame <> "@"}
 
   defp add_device_id(%{frame: frame, device_id: device_id} = frame_struct) do
