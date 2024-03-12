@@ -10,6 +10,7 @@ defmodule Ohlex.Tcp.Client do
   @tcp_port 950
   @ip {0, 0, 0, 0}
   @active false
+  @max_retries 200
 
   defstruct ip: nil,
             tcp_port: nil,
@@ -18,7 +19,7 @@ defmodule Ohlex.Tcp.Client do
             active: false,
             status: nil,
             ctrl_pid: nil,
-            max_retries: 200,
+            max_retries: nil,
             frame_acc: ""
 
   @type client_option ::
@@ -110,6 +111,8 @@ defmodule Ohlex.Tcp.Client do
          true <- check_ip(ip),
          timeout <- Keyword.get(parameters, :timeout, @timeout),
          true <- is_integer(timeout) and timeout >= 0,
+         max_retries <- Keyword.get(parameters, :max_retries, @max_retries),
+         true <- is_integer(max_retries),
          active <- Keyword.get(parameters, :active, @active),
          true <- is_boolean(active) do
       {:ok,
@@ -119,6 +122,7 @@ defmodule Ohlex.Tcp.Client do
          timeout: timeout,
          status: :closed,
          active: active,
+         max_retries: max_retries,
          ctrl_pid: ctrl_pid
        }}
     else
@@ -174,6 +178,7 @@ defmodule Ohlex.Tcp.Client do
 
   def handle_call({:request, cmd_args}, _from, %{active: true} = state) do
     with {:ok, frame_data} <- Omron.build_frame(cmd_args),
+         :ok <- Logger.debug("(#{__MODULE__}) Sending frame: #{inspect({frame_data, cmd_args})}"),
          :ok <- send_tcp_msg(state, frame_data) do
       {:reply, :ok, state}
     else
@@ -187,9 +192,11 @@ defmodule Ohlex.Tcp.Client do
 
   def handle_call({:request, cmd_args}, _from, state) do
     with {:ok, frame_data} <- Omron.build_frame(cmd_args),
+         :ok <- Logger.debug("(#{__MODULE__}) Sending frame: #{inspect({frame_data, cmd_args})}"),
          :ok <- send_tcp_msg(state, frame_data),
          {:ok, tcp_server_response} <- receive_tcp_msg(state, 0),
          {:ok, values} <- Omron.parse(tcp_server_response),
+         :ok <- Logger.debug("(#{__MODULE__}) Server Response: #{inspect({tcp_server_response, values})}"),
          gns_response <- build_genserver_response(values) do
       {:reply, gns_response, %Client{state | frame_acc: ""}}
     else
@@ -204,7 +211,8 @@ defmodule Ohlex.Tcp.Client do
   # Handles incomming TCP frame (active: true only)
   def handle_info({:tcp, _port, response}, %{ctrl_pid: ctrl_pid, frame_acc: frame_acc} = state) do
     with current_frame <- frame_acc <> response,
-         {:ok, values} <- Omron.parse(current_frame) do
+         {:ok, values} <- Omron.parse(current_frame),
+         :ok <- Logger.debug("(#{__MODULE__}) Server Response: #{inspect({current_frame, values})}") do
       send(ctrl_pid, {Ohlex.Tcp.Client, current_frame, values})
       {:noreply, %Client{state | frame_acc: ""}}
     else
