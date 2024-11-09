@@ -11,6 +11,7 @@ defmodule Ohlex.Tcp.Client do
   @ip {0, 0, 0, 0}
   @active false
   @max_retries 200
+  @flush_timeout 10
 
   defstruct ip: nil,
             tcp_port: nil,
@@ -20,6 +21,7 @@ defmodule Ohlex.Tcp.Client do
             status: nil,
             ctrl_pid: nil,
             max_retries: nil,
+            auto_flush: false,
             frame_acc: ""
 
   @type client_option ::
@@ -113,6 +115,8 @@ defmodule Ohlex.Tcp.Client do
          true <- is_integer(timeout) and timeout >= 0,
          max_retries <- Keyword.get(parameters, :max_retries, @max_retries),
          true <- is_integer(max_retries),
+         auto_flush <- Keyword.get(parameters, :auto_flush, false),
+         true <- is_boolean(auto_flush),
          active <- Keyword.get(parameters, :active, @active),
          true <- is_boolean(active) do
       {:ok,
@@ -123,6 +127,7 @@ defmodule Ohlex.Tcp.Client do
          status: :closed,
          active: active,
          max_retries: max_retries,
+         auto_flush: auto_flush,
          ctrl_pid: ctrl_pid
        }}
     else
@@ -193,6 +198,7 @@ defmodule Ohlex.Tcp.Client do
   def handle_call({:request, cmd_args}, _from, state) do
     with {:ok, frame_data} <- Omron.build_frame(cmd_args),
          :ok <- Logger.debug("(#{__MODULE__}) Sending frame: #{inspect({frame_data, cmd_args})}"),
+         :ok <- flush_tcp_buffer(state),
          :ok <- send_tcp_msg(state, frame_data),
          {:ok, tcp_server_response} <- receive_tcp_msg(state, 0),
          {:ok, values} <- Omron.parse(tcp_server_response),
@@ -283,4 +289,10 @@ defmodule Ohlex.Tcp.Client do
 
   defp build_genserver_response(<<>>), do: :ok
   defp build_genserver_response(values), do: {:ok, values}
+
+  defp flush_tcp_buffer(%{auto_flush: false}), do: :ok
+  defp flush_tcp_buffer(state) do
+    buffer_content = receive_tcp_msg(%{state | timeout: @flush_timeout, max_retries: 1}, 0)
+    Logger.warning("(#{__MODULE__}) Flushed frame: #{inspect({buffer_content, state})}")
+  end
 end
